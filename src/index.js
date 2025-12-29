@@ -2,63 +2,54 @@ import express from "express";
 import cors from "cors";
 import multer from "multer";
 import sharp from "sharp";
-import fs from "fs";
-import path from "path";
+import morgan from "morgan";
+import { createPoolFromEnv } from "./db.js";
 
 const app = express();
+
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "5mb" }));
+app.use(morgan("dev"));
 
-const UPLOAD_DIR = path.join(process.cwd(), "uploads");
-if (!fs.existsSync(UPLOAD_DIR)) {
-    fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-}
+const pool = createPoolFromEnv();
 
-// ---------- Multer setup ----------
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => cb(null, UPLOAD_DIR),
-    filename: (req, file, cb) => {
-        const timestamp = Date.now();
-        const ext = path.extname(file.originalname) || ".png";
-        const safeBase = path
-            .basename(file.originalname, ext)
-            .replace(/[^a-zA-Z0-9-_]/g, "_");
+const API = "/api/images";
 
-        cb(null, `${timestamp}-${safeBase}${ext}`);
-    },
+const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 8 * 1024 * 1024 }, // 8 MB
 });
 
-const upload = multer({ storage });
+app.get("/", (_req, res) => res.json({ message: "Image service is running 🚀" }));
 
-// ---------- Health ----------
-app.get("/", (req, res) => {
-    res.json({ message: "Image service is running 🚀" });
-});
-
-app.get("/health", (req, res) => {
-    res.json({ status: "ok" });
-});
-
-// ---------- Upload ----------
-app.post("/images", upload.single("image"), async (req, res) => {
+app.get("/health", async (_req, res) => {
     try {
-        if (!req.file) {
-            return res.status(400).json({ message: "No file uploaded" });
-        }
+        const [rows] = await pool.query("SELECT 1 AS ok");
+        res.json({ status: "ok", db: rows?.[0]?.ok === 1 });
+    } catch (_err) {
+        res.status(500).json({ status: "error", message: "DB not reachable" });
+    }
+});
 
-        const originalPath = req.file.path;
-        const pngName = req.file.filename.replace(/\.[^.]+$/, "") + ".png";
-        const pngPath = path.join(UPLOAD_DIR, pngName);
+app.post(API, upload.single("image"), async (req, res) => {
+    try {
+        if (!req.file) return res.status(400).json({ message: "No file uploaded" });
 
-        await sharp(originalPath).png().toFile(pngPath);
+        const pngBuffer = await sharp(req.file.buffer).png().toBuffer();
 
-        if (originalPath !== pngPath && fs.existsSync(originalPath)) {
-            fs.unlinkSync(originalPath);
-        }
+        const [result] = await pool.execute(
+            `
+      INSERT INTO images (content_type, original_name, data, original_image_id)
+      VALUES (?, ?, ?, NULL)
+      `,
+            ["image/png", req.file.originalname || null, pngBuffer]
+        );
+
+        const id = result.insertId;
 
         return res.status(201).json({
-            id: pngName,
-            url: `/images/${pngName}/raw`,
+            id,
+            url: `${API}/${id}/raw`,
         });
     } catch (err) {
         console.error("Upload error:", err);
@@ -66,92 +57,138 @@ app.post("/images", upload.single("image"), async (req, res) => {
     }
 });
 
-// ---------- Get raw image ----------
-app.get("/images/:id/raw", async (req, res) => {
+app.get(`${API}/:id/raw`, async (req, res) => {
     try {
-        const { id } = req.params;
-        const filePath = path.join(UPLOAD_DIR, id);
-        if (!fs.existsSync(filePath)) {
-            return res.status(404).json({ message: "Image not found" });
-        }
+        const id = Number(req.params.id);
+        if (!Number.isFinite(id)) return res.status(400).json({ message: "Invalid image id" });
 
-        res.setHeader("Content-Type", "image/png");
-        fs.createReadStream(filePath).pipe(res);
+        const [rows] = await pool.execute(`SELECT content_type, data FROM images WHERE id = ?`, [id]);
+
+        if (!rows.length) return res.status(404).json({ message: "Image not found" });
+
+        const img = rows[0];
+        res.setHeader("Content-Type", img.content_type || "image/png");
+        res.setHeader("Cache-Control", "no-store");
+        return res.status(200).send(img.data);
     } catch (err) {
-        console.error("Raw error:", err);
+        console.error("Fetch raw error:", err);
         return res.status(500).json({ message: "Failed to read image" });
     }
 });
 
-// ---------- Annotate (draw + text) ----------
-app.post("/images/:id/annotate", async (req, res) => {
+app.put(`${API}/:id`, upload.single("image"), async (req, res) => {
     try {
-        const { id } = req.params;
-        const {
-            strokes = [], // [{ points:[{x,y},...], color, width }]
-            texts = [],   // [{ x,y,text,color,fontSize }]
-        } = req.body || {};
+        const id = Number(req.params.id);
+        if (!Number.isFinite(id)) return res.status(400).json({ message: "Invalid image id" });
+        if (!req.file) return res.status(400).json({ message: "No file uploaded" });
 
-        const filePath = path.join(UPLOAD_DIR, id);
-        if (!fs.existsSync(filePath)) {
-            return res.status(404).json({ message: "Image not found" });
-        }
+        // Ensure image exists
+        const [existing] = await pool.execute(`SELECT id FROM images WHERE id = ?`, [id]);
+        if (!existing.length) return res.status(404).json({ message: "Image not found" });
 
-        const image = sharp(filePath);
-        const meta = await image.metadata();
+        // Convert to PNG (consistent)
+        const pngBuffer = await sharp(req.file.buffer).png().toBuffer();
+
+        await pool.execute(
+            `UPDATE images SET content_type = ?, data = ?, original_name = ? WHERE id = ?`,
+            ["image/png", pngBuffer, req.file.originalname || "edited.png", id]
+        );
+
+        res.setHeader("Cache-Control", "no-store");
+
+        return res.status(200).json({
+            id,
+            url: `${API}/${id}/raw`,
+            updated: true,
+        });
+    } catch (err) {
+        console.error("Replace error:", err);
+        return res.status(500).json({ message: "Failed to replace image" });
+    }
+});
+
+app.post(`${API}/:id/annotate`, async (req, res) => {
+    try {
+        const originalId = Number(req.params.id);
+        if (!Number.isFinite(originalId)) return res.status(400).json({ message: "Invalid image id" });
+
+        const body = req.body || {};
+        const strokes = Array.isArray(body.strokes) ? body.strokes : [];
+        const texts = Array.isArray(body.texts) ? body.texts : [];
+
+        const [rows] = await pool.execute(
+            `SELECT original_name AS originalName, data AS data FROM images WHERE id = ?`,
+            [originalId]
+        );
+
+        if (!rows.length) return res.status(404).json({ message: "Image not found" });
+
+        const original = rows[0];
+
+        const baseImage = sharp(original.data);
+        const meta = await baseImage.metadata();
+
         const width = meta.width || 1024;
         const height = meta.height || 768;
 
-        const svgParts = [
+        const svg = [
             `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" xmlns="http://www.w3.org/2000/svg">`,
         ];
 
-        // Lines
         for (const stroke of strokes) {
-            if (!stroke.points || stroke.points.length < 2) continue;
+            if (!stroke?.points || stroke.points.length < 2) continue;
+
             const color = stroke.color || "#ff0000";
             const w = stroke.width || 4;
+
             const d =
                 "M " +
                 stroke.points
-                    .map((p, idx) =>
-                        idx === 0 ? `${p.x} ${p.y}` : `L ${p.x} ${p.y}`
-                    )
+                    .map((p, i) => (i === 0 ? `${p.x} ${p.y}` : `L ${p.x} ${p.y}`))
                     .join(" ");
-            svgParts.push(
+
+            svg.push(
                 `<path d="${d}" fill="none" stroke="${color}" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round" />`
             );
         }
 
-        // Text labels
         for (const t of texts) {
-            if (!t.text) continue;
+            if (!t?.text) continue;
+
             const x = t.x ?? 20;
             const y = t.y ?? 20;
             const color = t.color || "#00ff00";
             const fontSize = t.fontSize || 24;
+
             const escaped = String(t.text).replace(/&/g, "&amp;").replace(/</g, "&lt;");
-            svgParts.push(
+
+            svg.push(
                 `<text x="${x}" y="${y}" fill="${color}" font-size="${fontSize}" font-family="Arial, sans-serif">${escaped}</text>`
             );
         }
 
-        svgParts.push("</svg>");
-        const svgBuffer = Buffer.from(svgParts.join(""), "utf-8");
+        svg.push("</svg>");
+        const svgBuffer = Buffer.from(svg.join(""), "utf-8");
 
-        const annotated = await sharp(filePath)
+        const annotatedBuffer = await sharp(original.data)
             .composite([{ input: svgBuffer }])
-            .png();
+            .png()
+            .toBuffer();
 
-        const baseName = path.basename(id, path.extname(id));
-        const newId = `${baseName}-annotated.png`;
-        const outPath = path.join(UPLOAD_DIR, newId);
+        const [insertRes] = await pool.execute(
+            `
+      INSERT INTO images (content_type, original_name, data, original_image_id)
+      VALUES (?, ?, ?, ?)
+      `,
+            ["image/png", original.originalName || null, annotatedBuffer, originalId]
+        );
 
-        await annotated.toFile(outPath);
+        const newId = insertRes.insertId;
 
         return res.status(201).json({
             id: newId,
-            url: `/images/${newId}/raw`,
+            url: `${API}/${newId}/raw`,
+            originalImageId: originalId,
         });
     } catch (err) {
         console.error("Annotate error:", err);
@@ -160,6 +197,4 @@ app.post("/images/:id/annotate", async (req, res) => {
 });
 
 const PORT = process.env.PORT || 4001;
-app.listen(PORT, () => {
-    console.log(`Image service running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`✅ Image service running on port ${PORT}`));

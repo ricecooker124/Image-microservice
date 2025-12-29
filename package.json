@@ -9,13 +9,25 @@
     "start": "node src/index.js"
   },
   "dependencies": {
-    "express": "^4.21.2",
-    "multer": "^2.0.0",
-    "sharp": "^0.33.5",
     "cors": "^2.8.5",
-    "morgan": "^1.10.0"
+    "express": "^4.22.1",
+    "morgan": "^1.10.0",
+    "multer": "^2.0.2",
+    "mysql2": "^3.16.0",
+    "sharp": "^0.33.5"
   },
   "devDependencies": {
-    "nodemon": "^3.1.7"
-  }
+    "nodemon": "^3.1.11"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ricecooker124/Image-microservice.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/ricecooker124/Image-microservice/issues"
+  },
+  "homepage": "https://github.com/ricecooker124/Image-microservice#readme"
 }
