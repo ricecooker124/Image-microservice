@@ -4,10 +4,16 @@ import multer from "multer";
 import sharp from "sharp";
 import morgan from "morgan";
 import { createPoolFromEnv } from "./db.js";
+import { jwtCheck, requireRole, jwtErrorHandler } from "./auth.js";
 
 const app = express();
 
-app.use(cors());
+// CORS configuration
+app.use(cors({
+    origin: ["http://localhost:3000", "http://localhost:8080", "http://localhost"],
+    credentials: true,
+}));
+
 app.use(express.json({ limit: "5mb" }));
 app.use(morgan("dev"));
 
@@ -20,6 +26,8 @@ const upload = multer({
     limits: { fileSize: 8 * 1024 * 1024 }, // 8 MB
 });
 
+// ==================== PUBLIC ENDPOINTS ====================
+
 app.get("/", (_req, res) => res.json({ message: "Image service is running 🚀" }));
 
 app.get("/health", async (_req, res) => {
@@ -31,7 +39,35 @@ app.get("/health", async (_req, res) => {
     }
 });
 
-app.post(API, upload.single("image"), async (req, res) => {
+// ==================== PUBLIC ENDPOINTS (view images) ====================
+
+// Get raw image - public endpoint (no auth required to view images)
+app.get(`${API}/:id/raw`, async (req, res) => {
+    try {
+        const id = Number(req.params.id);
+        if (!Number.isFinite(id)) return res.status(400).json({ message: "Invalid image id" });
+
+        const [rows] = await pool.execute(`SELECT content_type, data FROM images WHERE id = ?`, [id]);
+
+        if (!rows.length) return res.status(404).json({ message: "Image not found" });
+
+        const img = rows[0];
+        res.setHeader("Content-Type", img.content_type || "image/png");
+        res.setHeader("Cache-Control", "no-store");
+        return res.status(200).send(img.data);
+    } catch (err) {
+        console.error("Fetch raw error:", err);
+        return res.status(500).json({ message: "Failed to read image" });
+    }
+});
+
+// ==================== PROTECTED ENDPOINTS ====================
+
+// Apply JWT validation to all other /api/images routes
+app.use(API, jwtCheck);
+
+// Upload image - requires PRACTITIONER role
+app.post(API, requireRole(["PRACTITIONER", "ADMIN"]), upload.single("image"), async (req, res) => {
     try {
         if (!req.file) return res.status(400).json({ message: "No file uploaded" });
 
@@ -57,26 +93,8 @@ app.post(API, upload.single("image"), async (req, res) => {
     }
 });
 
-app.get(`${API}/:id/raw`, async (req, res) => {
-    try {
-        const id = Number(req.params.id);
-        if (!Number.isFinite(id)) return res.status(400).json({ message: "Invalid image id" });
-
-        const [rows] = await pool.execute(`SELECT content_type, data FROM images WHERE id = ?`, [id]);
-
-        if (!rows.length) return res.status(404).json({ message: "Image not found" });
-
-        const img = rows[0];
-        res.setHeader("Content-Type", img.content_type || "image/png");
-        res.setHeader("Cache-Control", "no-store");
-        return res.status(200).send(img.data);
-    } catch (err) {
-        console.error("Fetch raw error:", err);
-        return res.status(500).json({ message: "Failed to read image" });
-    }
-});
-
-app.put(`${API}/:id`, upload.single("image"), async (req, res) => {
+// Replace/update image - requires PRACTITIONER role
+app.put(`${API}/:id`, requireRole(["PRACTITIONER", "ADMIN"]), upload.single("image"), async (req, res) => {
     try {
         const id = Number(req.params.id);
         if (!Number.isFinite(id)) return res.status(400).json({ message: "Invalid image id" });
@@ -107,7 +125,8 @@ app.put(`${API}/:id`, upload.single("image"), async (req, res) => {
     }
 });
 
-app.post(`${API}/:id/annotate`, async (req, res) => {
+// Annotate image - requires PRACTITIONER role
+app.post(`${API}/:id/annotate`, requireRole(["PRACTITIONER", "ADMIN"]), async (req, res) => {
     try {
         const originalId = Number(req.params.id);
         if (!Number.isFinite(originalId)) return res.status(400).json({ message: "Invalid image id" });
@@ -195,6 +214,13 @@ app.post(`${API}/:id/annotate`, async (req, res) => {
         return res.status(500).json({ message: "Failed to annotate image" });
     }
 });
+
+// ==================== ERROR HANDLER ====================
+
+// JWT error handler (must be after routes)
+app.use(jwtErrorHandler);
+
+// ==================== START SERVER ====================
 
 const PORT = process.env.PORT || 4001;
 app.listen(PORT, () => console.log(`✅ Image service running on port ${PORT}`));
