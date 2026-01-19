@@ -11,3 +11,4 @@ ENV PORT=4001
 EXPOSE 4001
 
 CMD ["node", "src/index.js"]
+
