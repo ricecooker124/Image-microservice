@@ -9,8 +9,14 @@ import { jwtCheck, requireRole, jwtErrorHandler } from "./auth.js";
 const app = express();
 
 // CORS configuration
+// CORS configuration
 app.use(cors({
-    origin: ["http://localhost:3000", "http://localhost:8080", "http://localhost"],
+    origin: [
+        "http://localhost:3000",
+        "http://localhost:8080",
+        "http://localhost",
+        "https://frontendservice-lab3.app.cloud.cbh.kth.se"  // <-- LÄGG TILL
+    ],
     credentials: true,
 }));
 

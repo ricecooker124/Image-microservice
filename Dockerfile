@@ -12,3 +12,5 @@ EXPOSE 4001
 
 CMD ["node", "src/index.js"]
 
+
+

@@ -15,10 +15,10 @@ export const jwtCheck = expressjwt({
         jwksRequestsPerMinute: 5,
         jwksUri: `${KEYCLOAK_URL}/realms/${REALM}/protocol/openid-connect/certs`,
     }),
-    // Accept tokens from multiple issuers (localhost for frontend, keycloak for internal)
     issuer: [
         `${KEYCLOAK_URL}/realms/${REALM}`,
         `http://localhost:8080/realms/${REALM}`,
+        `https://keycloakservice-lab3.app.cloud.cbh.kth.se/auth/realms/${REALM}`,  // <-- LÄGG TILL
     ],
     algorithms: ["RS256"],
 });
