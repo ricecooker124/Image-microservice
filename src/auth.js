@@ -3,6 +3,11 @@ import jwksRsa from "jwks-rsa";
 
 const KEYCLOAK_URL = process.env.KEYCLOAK_URL || "http://keycloak:8080";
 const REALM = process.env.KEYCLOAK_REALM || "patient-journal";
+const defaultIssuer = `${KEYCLOAK_URL}/realms/${REALM}`;
+const issuerList = (process.env.JWT_ISSUERS || defaultIssuer)
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
 
 /**
  * JWT validation middleware using Keycloak's JWKS endpoint.
@@ -15,11 +20,7 @@ export const jwtCheck = expressjwt({
         jwksRequestsPerMinute: 5,
         jwksUri: `${KEYCLOAK_URL}/realms/${REALM}/protocol/openid-connect/certs`,
     }),
-    issuer: [
-        `${KEYCLOAK_URL}/realms/${REALM}`,
-        `http://localhost:8080/realms/${REALM}`,
-        `https://keycloakservice-lab3.app.cloud.cbh.kth.se/auth/realms/${REALM}`,  // <-- LÄGG TILL
-    ],
+    issuer: issuerList,
     algorithms: ["RS256"],
 });
 
