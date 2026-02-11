@@ -227,4 +227,30 @@ app.use(jwtErrorHandler);
 // ==================== START SERVER ====================
 
 const PORT = process.env.PORT || 4001;
-app.listen(PORT, () => console.log(`✅ Image service running on port ${PORT}`));
+
+async function ensureSchema() {
+    await pool.execute(`
+        CREATE TABLE IF NOT EXISTS images (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            content_type VARCHAR(50) NOT NULL,
+            original_name VARCHAR(255),
+            data LONGBLOB NOT NULL,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            original_image_id BIGINT NULL,
+            INDEX idx_original_image_id (original_image_id),
+            INDEX idx_created_at (created_at)
+        )
+    `);
+}
+
+async function start() {
+    try {
+        await ensureSchema();
+        app.listen(PORT, () => console.log(`✅ Image service running on port ${PORT}`));
+    } catch (err) {
+        console.error("❌ Failed to initialize image-service schema:", err);
+        process.exit(1);
+    }
+}
+
+start();
